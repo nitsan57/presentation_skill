@@ -1,0 +1,72 @@
+# Design system
+
+Presets consumed by `scripts/build_deck.py` and usable by hand-written slides. Each preset
+defines a palette, fonts, a type scale, and grid metrics. Keep to one preset per deck.
+
+## Canvas and grid
+
+- **16:9** (default): 13.333in × 7.5in (12192000 × 6858000 EMU).
+- **4:3**: 10in × 7.5in.
+- Margin: 0.6in on all sides. Content width = canvas width − 2 × margin.
+- Title baseline: top 0.5in; body starts 1.6in from top.
+- Footer (page number / deck title): 0.35in from bottom.
+
+## Type scale (points)
+
+| Role | 16:9 | 4:3 | Weight |
+|---|---|---|---|
+| Deck title | 40 | 36 | Bold |
+| Slide title | 30 | 28 | Bold |
+| Section header | 34 | 30 | Bold |
+| Body / bullets | 18 | 16 | Regular |
+| Caption / footer | 12 | 12 | Regular |
+| Quote | 26 | 24 | Italic |
+
+Hard floors enforced by the validator: titles ≥ 28pt, body ≥ 14pt.
+
+## Presets
+
+### `clean-light`
+
+- Background: `FFFFFF`; surface/card: `F2F4F7`.
+- Text: `1A1A1A`; muted: `5A6472`.
+- Accent: `1F6FEB` (primary), `0E9F6E` (positive), `D9381E` (negative).
+- Fonts: title **Segoe UI Semibold**, body **Segoe UI** (fallbacks: Calibri, Arial).
+- Use for: general business, docs, teaching.
+
+### `corporate-blue`
+
+- Background: `FFFFFF`; surface/card: `E8EEF7`.
+- Text: `0B1F33`; muted: `4A5A6A`.
+- Accent: `0B3D91` (primary), `2E7DD1` (secondary), `C9A227` (highlight).
+- Fonts: title **Calibri** bold, body **Calibri**.
+- Use for: corporate decks, board updates, proposals.
+
+### `dark-tech`
+
+- Background: `0D1117`; surface/card: `161B22`.
+- Text: `E6EDF3`; muted: `8B949E`.
+- Accent: `58A6FF` (primary), `3FB950` (positive), `F85149` (negative).
+- Fonts: title **Segoe UI Semibold**, body **Segoe UI**.
+- Use for: engineering, product, demos.
+
+## Contrast rules
+
+- Body text must clear WCAG AA: **4.5:1** on the background; large/title text **3:1**.
+- Never place body text directly on an accent fill unless contrast is verified; use the surface
+  color for text cards instead.
+- The validator computes the ratio between a solid-fill background shape and its text and
+  fails below the floor. If a slide fails, darken/lighten the text or the fill.
+
+## Chart rules
+
+- Max ~7 categories; group or drop the rest.
+- One message per chart; put it in the slide title, not a legend.
+- Reuse accent colors as the series palette; greys for de-emphasized series.
+- Label axes and units; prefer direct value labels over a legend when ≤4 series.
+
+## Tables
+
+- Header row filled with the primary accent, text in white (verify contrast).
+- Zebra-stripe Body rows with the surface color.
+- ≤6 columns, ≤8 rows; anything larger becomes a separate appendix slide.
