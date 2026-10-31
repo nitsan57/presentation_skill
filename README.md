@@ -31,6 +31,13 @@ The skill lives at the repository root, so copy the whole repo (or its contents)
 
 Or install it from the Kilo marketplace.
 
+One-liner (clone into the global skills directory):
+
+```sh
+git clone https://github.com/Kilo-Org/kilo-presentation-creator \
+  ~/.config/kilo/skills/presentation-creator
+```
+
 The scripts need Python 3.9+ with `python-pptx`:
 
 ```sh
@@ -65,7 +72,8 @@ pitch, keynote, or slide outline (and on `*.pptx` files).
 ├── LICENSE
 ├── references/   python-pptx-recipes.md, design-system.md, troubleshooting.md
 ├── scripts/      build_deck.py, validate_deck.py, render_preview.py, test_deck.py
-└── examples/     example-deck.json, layouts-deck.json, example-brief.md
+├── tests/        test_layouts.py, test_examples.py
+└── examples/     example-deck.json, layouts-deck.json, edge-cases-deck.json
 ```
 
 ## License

@@ -85,3 +85,26 @@ Hard floors enforced by the validator: titles ≥ 28pt, body ≥ 14pt.
 - Every slide carries a subtle footer: deck title (left) and slide number (right).
 - Footer uses the caption size (12pt) and the muted color on light backgrounds, or the
   band text color on full-bleed band slides.
+
+## Logo placement
+
+- Default: top-right, 0.7in height, 0.35in margin from edges.
+- Keep the logo on a solid or quiet area; avoid overlapping the title.
+- Use `logo.position` (`top-left`, `top-right`, `bottom-left`, `bottom-right`) and `logo.size`.
+- On title slides the logo may be larger; on content slides keep it subtle.
+
+## Footer, page numbers, and markings
+
+- Every slide carries deck title (left) and slide number (right) by default.
+- `footer.enabled`, `footer.page_numbers`, `footer.title`, `footer.confidential`, and
+  `footer.mark` control the footer. `confidential: true` (top-level or footer) prints
+  "CONFIDENTIAL".
+- On full-bleed band slides the footer switches to the band text color.
+
+## Fonts and fallbacks
+
+- `fonts.title` / `fonts.body` set the primary font names.
+- `fonts.title_fallbacks` / `fonts.body_fallbacks` (or a list value for `title_font`) define
+  the fallback chain used when the primary font is unavailable.
+- `font_files` validates that custom font files exist; python-pptx cannot embed fonts, so the
+  font must be installed on the rendering machine. Document this requirement in delivery.

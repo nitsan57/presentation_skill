@@ -9,7 +9,7 @@ compatibility: Requires Python 3.9+ with python-pptx (pip install python-pptx); 
 metadata:
   category: productivity
   author: nitsan57
-  version: "1.2.0"
+  version: "1.3.0"
   suggest_for:
     filename:
       - '*.pptx'
@@ -125,12 +125,56 @@ Top-level keys:
 | `slides` | yes | List of slide objects. |
 
 Each slide: `layout` ∈ `title, section, bullets, two_column, image, table, quote, chart,
-closing, stats, timeline, comparison, cards`, plus `notes`. Common fields: `title`, `subtitle`, `bullets` (strings), `columns`
+closing, stats, timeline, comparison, cards, before_after, problem_solution_impact`, plus `notes`. Common fields: `title`, `subtitle`, `bullets` (strings), `columns`
 (two lists for `two_column`), `table` (`headers` + `rows`), `image` (`path`), `quote`
 (`text` + `attribution`), `chart` (`type` ∈ `bar, line, pie, doughnut`, `categories`, `series`
 `[{name, values}]`), `stats` (`stats: [{value,label,delta}]`),
 `timeline` (`steps: [{title,body}]`), `comparison` (`headers` +
-`columns`), `cards` (`cards: [{title,body,bullets}]`).
+`columns`), `cards` (`cards: [{title,body,bullets,icon}]`),
+`before_after` (`before`/`after` with `title`+`items`),
+`problem_solution_impact` (`problem`/`solution`/`impact`, each with `title`,`body`,`bullets`).
+Chart fields: `x_title`, `y_title`, `unit`, `legend`, `show_values`, `colors`, `engine`
+(`pptx` default or `matplotlib`). Table fields: `bold_first_column`, `zebra`, `font_size`.
+Top-level brand fields: `logo` (`path`,`position`,`size`), `confidential`, `footer`
+(`enabled`,`page_numbers`,`title`,`confidential`,`mark`), `fonts`
+(`title`,`body`,`title_fallbacks`,`body_fallbacks`), `font_files`.
+
+## Assertive outline examples
+
+Write headlines as full sentences that state the takeaway, not topic labels.
+
+- Bad: "Q3 results"
+- Good: "Q3 revenue grew 18% on enterprise expansion"
+- Bad: "Architecture"
+- Good: "A single queue decouples ingest from render, cutting p99 latency"
+- Bad: "Next steps"
+- Good: "Ship the validator gate in v1.3 and measure review time"
+
+Each slide gets ≤5 bullets and one paragraph of speaker notes. If a slide needs more,
+split it or move detail into notes.
+
+## When to extend JSON vs. write custom python-pptx
+
+- Prefer the JSON spec + builder for any slide the contract already covers (title, bullets,
+  stats, timeline, comparison, cards, charts, tables). Output stays deterministic and
+  validated.
+- Write custom python-pptx (using `references/python-pptx-recipes.md`) only when the slide
+  needs a bespoke visual the contract cannot express (custom diagrams, complex charts,
+  mixed media). Keep the same theme objects (colors, fonts, grid) so the deck stays
+  consistent, and still run the QA gate on the resulting file.
+- If a bespoke layout proves reusable, add it to the JSON contract and the builder rather
+  than leaving it as one-off code.
+
+## Anti-patterns
+
+- Title-only slides with no body or takeaway.
+- 8+ bullets, or bullets longer than two lines.
+- Decorative lines or shapes that reduce text contrast below the floor.
+- Body text directly on an accent fill without a surface card.
+- Inconsistent fonts or colors across slides (mixing presets).
+- Tables with more than 6 columns or 8 rows.
+- Charts with more than ~7 categories or no axis labels/units.
+- Skipping the QA gate or delivering with errors.
 
 ## Safety and constraints
 

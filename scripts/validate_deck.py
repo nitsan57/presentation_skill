@@ -131,26 +131,46 @@ def _max_font_size(shape) -> float:
 
 
 def _estimate_overflow(shape):
-    """Return (needed_pt, available_pt) or None when not applicable."""
+    """Return (needed_pt, available_pt) or None when not applicable.
+
+    Uses a word-wrap estimate (char width ~0.52em) instead of a raw
+    character count, which is closer to how PowerPoint wraps text.
+    """
     tf = shape.text_frame
     width_pt = _emu_to_pt(shape.width) - 14.4  # default L/R inset ~0.2in
     height_pt = _emu_to_pt(shape.height) - 7.2  # default T/B inset ~0.1in
     if width_pt <= 10 or height_pt <= 4:
         return None
     needed = 0.0
-    for p in tf.paragraphs:
-        text = "".join(r.text for r in p.runs)
+    for para in tf.paragraphs:
+        text = "".join(r.text for r in para.runs)
         if not text.strip():
             continue
         size = max(
-            (r.font.size.pt for r in p.runs if r.font.size is not None),
+            (r.font.size.pt for r in para.runs if r.font.size is not None),
             default=18.0,
         )
-        chars_per_line = max(1, int(width_pt / (size * 0.5)))
-        lines = max(1, math.ceil(len(text) / chars_per_line))
-        needed += lines * size * 1.25
-        if p.space_after is not None:
-            needed += p.space_after.pt
+        chars_per_line = max(8, int(width_pt / (size * 0.52)))
+        # word-aware wrapping
+        words = text.split()
+        lines = 1
+        cur = 0
+        for w in words:
+            if cur == 0:
+                cur = len(w)
+            elif cur + 1 + len(w) <= chars_per_line:
+                cur += 1 + len(w)
+            else:
+                lines += 1
+                cur = len(w)
+                if len(w) > chars_per_line:
+                    lines += len(w) // chars_per_line
+                    cur = len(w) % chars_per_line
+        needed += lines * size * 1.3
+        if para.space_after is not None:
+            needed += para.space_after.pt
+        else:
+            needed += size * 0.2
     return needed, height_pt
 
 
@@ -294,6 +314,32 @@ def validate(path: Path) -> Report:
         bullets = _bullets_on_slide(slide)
         if bullets > MAX_BULLETS:
             report.error(idx, f"{bullets} bullets (max {MAX_BULLETS} per slide)")
+
+        # -- density / wall-of-text heuristics -------------------------
+        total_chars = sum(len(sh.text_frame.text) for sh in texts)
+        if total_chars > 1100:
+            report.warn(idx, f"slide is text-heavy ({total_chars} chars); consider splitting")
+        est_lines = 0
+        for _sh in texts:
+            _ = _estimate_overflow(_sh)
+        if bullets > 5:
+            report.warn(idx, f"{bullets} bullets is dense; aim for <=5")
+        # whitespace coverage
+        slide_area = (sw / 914400) * (prs.slide_height / 914400)
+        xs, ys, xe, ye = [], [], [], []
+        for shape in slide.shapes:
+            x, y, w, h = _shape_bbox(shape)
+            xs.append(x / 914400); ys.append(y / 914400)
+            xe.append((x + w) / 914400); ye.append((y + h) / 914400)
+        if xs:
+            covered = (max(xe) - min(xs)) * (max(ye) - min(ys))
+        else:
+            covered = 0.0
+        coverage = covered / slide_area if slide_area else 0.0
+        if coverage < 0.12:
+            report.warn(idx, f"slide looks sparse (content covers ~{coverage:.0%}); add substance or remove")
+        if coverage > 0.97:
+            report.warn(idx, f"slide looks crowded (content covers ~{coverage:.0%}); add whitespace")
 
         # -- title presence / duplicates --------------------------------
         if title_text is None:

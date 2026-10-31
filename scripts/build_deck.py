@@ -12,7 +12,10 @@ from __future__ import annotations
 
 import argparse
 import json
+import math
+import os
 import sys
+import tempfile
 from pathlib import Path
 
 try:
@@ -93,20 +96,29 @@ LAYOUTS = {
     "timeline",
     "comparison",
     "cards",
+    "before_after",
+    "problem_solution_impact",
+    "kpi_row",
 }
 
 LAYOUT_ALIASES = {
     "kpi": "stats",
+    "kpi_row": "stats",
     "process": "timeline",
     "process_steps": "timeline",
     "card": "cards",
+    "card_grid": "cards",
+    "psi": "problem_solution_impact",
+    "problem-solution-impact": "problem_solution_impact",
+    "before/after": "before_after",
+    "before-after": "before_after",
+    "comparison_table": "table",
 }
 
 
 def rgb(hexstr: str) -> RGBColor:
     hexstr = str(hexstr).lstrip("#")
     return RGBColor(int(hexstr[0:2], 16), int(hexstr[2:4], 16), int(hexstr[4:6], 16))
-
 
 
 def _hex_luminance(hexstr: str) -> float:
@@ -123,6 +135,9 @@ def _hex_luminance(hexstr: str) -> float:
 
     return 0.2126 * ch(r) + 0.7152 * ch(g) + 0.0722 * ch(b)
 
+
+def _is_path(value) -> bool:
+    return isinstance(value, str) and ("/" in value or "\\" in value or "." in Path(value).name)
 
 
 class DeckBuilder:
@@ -143,6 +158,11 @@ class DeckBuilder:
             for key, value in palette_override.items():
                 if key in self.theme and isinstance(value, str):
                     self.theme[key] = value.lstrip("#")
+
+        # fonts
+        self.theme.setdefault("title_font_fallbacks", [])
+        self.theme.setdefault("body_font_fallbacks", [])
+        self._apply_fonts(spec, theme_spec)
 
         self.theme_name = str(theme_spec)
         if isinstance(palette_override, dict) and palette_override:
@@ -177,12 +197,84 @@ class DeckBuilder:
         self.accent_bar = bool(spec.get("accent_bar", True))
         self.card_padding = 0.25
 
+        # footer options
+        footer = spec.get("footer", True)
+        if isinstance(footer, bool):
+            footer = {"enabled": footer}
+        if not isinstance(footer, dict):
+            footer = {"enabled": True}
+        self.footer = {
+            "enabled": footer.get("enabled", True),
+            "page_numbers": footer.get("page_numbers", True),
+            "title": footer.get("title", True),
+            "confidential": footer.get("confidential", spec.get("confidential", False)),
+            "mark": footer.get("mark", footer.get("text", "")),
+            "position": footer.get("position", "bottom"),
+        }
+        if spec.get("confidential") is not None and "confidential" not in footer:
+            self.footer["confidential"] = spec.get("confidential")
+
+        # logo
+        logo = spec.get("logo")
+        if isinstance(logo, str):
+            logo = {"path": logo}
+        if not isinstance(logo, dict):
+            logo = None
+        self.logo = logo
+        if self.logo and self.logo.get("path"):
+            p = Path(self.logo["path"])
+            if not p.is_file():
+                raise FileNotFoundError(f"logo not found: {self.logo['path']}")
+        # font files (validated, not embedded by python-pptx)
+        font_files = spec.get("font_files", [])
+        if isinstance(font_files, str):
+            font_files = [font_files]
+        for fp in font_files or []:
+            if not Path(fp).is_file():
+                raise FileNotFoundError(f"font file not found: {fp}")
+        self.font_files = list(font_files or [])
+
+    def _apply_fonts(self, spec, theme_spec):
+        # theme-level font overrides (when theme is a dict)
+        if isinstance(theme_spec, dict):
+            if theme_spec.get("title_font"):
+                self.theme["title_font"] = theme_spec["title_font"]
+            if theme_spec.get("body_font"):
+                self.theme["body_font"] = theme_spec["body_font"]
+        fonts = spec.get("fonts")
+        if isinstance(fonts, dict):
+            if fonts.get("title") or fonts.get("title_font"):
+                self.theme["title_font"] = fonts.get("title", fonts.get("title_font"))
+            if fonts.get("body") or fonts.get("body_font"):
+                self.theme["body_font"] = fonts.get("body", fonts.get("body_font"))
+            if fonts.get("fallbacks"):
+                self.theme["title_font_fallbacks"] = list(fonts.get("fallbacks", []))
+                self.theme["body_font_fallbacks"] = list(fonts.get("fallbacks", []))
+            if fonts.get("title_fallbacks"):
+                self.theme["title_font_fallbacks"] = list(fonts["title_fallbacks"])
+            if fonts.get("body_fallbacks"):
+                self.theme["body_font_fallbacks"] = list(fonts["body_fallbacks"])
+        if spec.get("title_font"):
+            self.theme["title_font"] = spec["title_font"]
+        if spec.get("body_font"):
+            self.theme["body_font"] = spec["body_font"]
+        # allow list as primary + fallbacks
+        for key in ("title_font", "body_font"):
+            val = self.theme.get(key)
+            if isinstance(val, (list, tuple)):
+                self.theme[key] = val[0] if val else self.theme.get(key)
+                if key == "title_font":
+                    self.theme["title_font_fallbacks"] = list(val[1:]) + list(self.theme.get("title_font_fallbacks", []))
+                else:
+                    self.theme["body_font_fallbacks"] = list(val[1:]) + list(self.theme.get("body_font_fallbacks", []))
+
     # -- primitives -----------------------------------------------------
 
     def _new_slide(self) -> "object":
         slide = self.prs.slides.add_slide(self._blank)
         self._fill_background(slide)
         self._slide_no += 1
+        self._add_logo(slide)
         return slide
 
     def _fill_background(self, slide) -> None:
@@ -265,7 +357,57 @@ class DeckBuilder:
             p.space_after = Pt(8)
         return box
 
+    def _add_icon(self, slide, x, y, w, h, icon, color=None):
+        color = color or self.theme["accent"]
+        if icon is None or str(icon).strip() == "":
+            return
+        icon = str(icon)
+        if _is_path(icon) and Path(icon).is_file():
+            try:
+                pic = slide.shapes.add_picture(icon, Inches(x), Inches(y), width=Inches(w))
+                if pic.height > Inches(h):
+                    ratio = h / (pic.height / 914400)
+                    pic.width = Emu(int(pic.width * ratio))
+                    pic.height = Emu(int(pic.height * ratio))
+                pic.left = Emu(int((Inches(x) + Inches(w) - pic.width) / 2)) if False else Inches(x + (w - pic.width / 914400) / 2)
+                pic.top = Inches(y)
+            except Exception:
+                pass
+            return
+        box, tf = self._textbox(slide, x, y, w, h)
+        tf.vertical_anchor = MSO_ANCHOR.MIDDLE
+        tf.paragraphs[0].alignment = PP_ALIGN.CENTER
+        run = tf.paragraphs[0].add_run()
+        run.text = icon
+        self._style_run(run, min(30, max(18, int(h * 18))), color, bold=True)
+
+    def _add_logo(self, slide) -> None:
+        if not self.logo:
+            return
+        path = self.logo.get("path")
+        if not path or not Path(path).is_file():
+            return
+        pos = self.logo.get("position", "top-right")
+        size = float(self.logo.get("size", 0.7))
+        margin = float(self.logo.get("margin", 0.35))
+        if pos == "top-left":
+            x, y = self.margin, 0.2
+        elif pos == "top-right":
+            x, y = self.width_in - margin - size, 0.2
+        elif pos == "bottom-left":
+            x, y = self.margin, self.height_in - margin - size
+        elif pos == "bottom-right":
+            x, y = self.width_in - margin - size, self.height_in - margin - size
+        else:
+            x, y = self.width_in - margin - size, 0.2
+        try:
+            slide.shapes.add_picture(str(path), Inches(x), Inches(y), height=Inches(size))
+        except Exception:
+            pass
+
     def _add_footer(self, slide) -> None:
+        if not self.footer.get("enabled", True):
+            return
         footer_color = self.theme["muted"]
         for shape in slide.shapes:
             try:
@@ -275,16 +417,26 @@ class DeckBuilder:
             if w >= self.prs.slide_width * 0.9 and h >= self.prs.slide_height * 0.9:
                 footer_color = self.theme["band_text"]
         y = self.height_in - 0.42
+        parts = []
+        if self.footer.get("title", True) and self.deck_title:
+            parts.append(str(self.deck_title))
+        mark = self.footer.get("mark", "")
+        if self.footer.get("confidential"):
+            mark = "CONFIDENTIAL" if not mark else f"CONFIDENTIAL  |  {mark}"
+        if mark:
+            parts.append(str(mark))
+        left_text = "  ·  ".join(parts)
         left_w = self.content_w - 1.1
         box, tf = self._textbox(slide, self.margin, y, left_w, 0.36)
         run = tf.paragraphs[0].add_run()
-        run.text = str(self.deck_title or "")
+        run.text = left_text
         self._style_run(run, self.sizes["caption"], footer_color)
-        box, tf = self._textbox(slide, self.width_in - self.margin - 1.0, y, 1.0, 0.36)
-        tf.paragraphs[0].alignment = PP_ALIGN.RIGHT
-        run = tf.paragraphs[0].add_run()
-        run.text = str(self._slide_no)
-        self._style_run(run, self.sizes["caption"], footer_color)
+        if self.footer.get("page_numbers", True):
+            box, tf = self._textbox(slide, self.width_in - self.margin - 1.0, y, 1.0, 0.36)
+            tf.paragraphs[0].alignment = PP_ALIGN.RIGHT
+            run = tf.paragraphs[0].add_run()
+            run.text = str(self._slide_no)
+            self._style_run(run, self.sizes["caption"], footer_color)
 
     def _normalize_items(self, raw):
         if raw is None:
@@ -310,9 +462,10 @@ class DeckBuilder:
                     "body": it[1] if len(it) > 1 else "",
                     "items": it[2] if len(it) > 2 else None,
                     "bullets": it[2] if len(it) > 2 and isinstance(it[2], (list, tuple)) else [],
+                    "icon": None,
                 })
                 continue
-            items.append({"value": str(it), "label": "", "title": str(it), "body": "", "bullets": []})
+            items.append({"value": str(it), "label": "", "title": str(it), "body": "", "bullets": [], "icon": None})
         return items
 
     # -- layouts --------------------------------------------------------
@@ -426,7 +579,7 @@ class DeckBuilder:
         n_cols = len(headers) or (len(rows[0]) if rows and isinstance(rows[0], (list, tuple)) else 0)
         if n_cols == 0 and rows:
             n_cols = 1
-        n_rows = len(rows) + (1 if headers or rows else 0)
+        n_rows = len(rows) + (1 if headers else 0)
         if n_cols == 0:
             raise ValueError("table layout requires headers or rows")
         if n_rows == 0:
@@ -436,6 +589,10 @@ class DeckBuilder:
             Inches(self.content_w), Inches(self.height_in - 2.5),
         )
         table = shape.table
+        header_fill = tbl.get("header_fill", self.theme["band"])
+        header_text = tbl.get("header_text", self.theme["band_text"])
+        zebra = tbl.get("zebra", True)
+        font_size = tbl.get("font_size", self.sizes["body"] - 3)
         if headers:
             for c, text in enumerate(headers):
                 if c >= n_cols:
@@ -443,12 +600,12 @@ class DeckBuilder:
                 cell = table.cell(0, c)
                 cell.text = "" if text is None else str(text)
                 cell.fill.solid()
-                cell.fill.fore_color.rgb = rgb(self.theme["band"])
+                cell.fill.fore_color.rgb = rgb(header_fill)
                 for p in cell.text_frame.paragraphs:
                     for r in p.runs:
-                        r.font.size = Pt(self.sizes["body"] - 3)
+                        r.font.size = Pt(font_size)
                         r.font.bold = True
-                        r.font.color.rgb = rgb(self.theme["band_text"])
+                        r.font.color.rgb = rgb(header_text)
                         r.font.name = self.theme["body_font"]
         start_row = 1 if headers else 0
         for offset, row in enumerate(rows):
@@ -462,14 +619,16 @@ class DeckBuilder:
                 if val is None:
                     val = ""
                 cell.text = str(val)
-                if (r_i % 2 == 0) and headers:
+                if zebra and headers and (offset % 2 == 1):
                     cell.fill.solid()
                     cell.fill.fore_color.rgb = rgb(self.theme["surface"])
                 for p in cell.text_frame.paragraphs:
                     for r in p.runs:
-                        r.font.size = Pt(self.sizes["body"] - 3)
+                        r.font.size = Pt(font_size)
                         r.font.color.rgb = rgb(self.theme["text"])
                         r.font.name = self.theme["body_font"]
+                        if tbl.get("bold_first_column") and c_i == 0:
+                            r.font.bold = True
         self._notes(slide, slide_spec.get("notes"))
 
     def add_quote(self, slide_spec):
@@ -496,12 +655,19 @@ class DeckBuilder:
         slide = self._new_slide()
         self._heading(slide, slide_spec.get("title", ""), self.sizes["title"], self.theme["text"])
         chart = slide_spec.get("chart", {})
+        engine = chart.get("engine", "pptx")
+        if engine == "matplotlib":
+            self._add_chart_matplotlib(slide, slide_spec, chart)
+            self._notes(slide, slide_spec.get("notes"))
+            return
         ctype = chart.get("type", "bar")
         types = {
             "bar": XL_CHART_TYPE.COLUMN_CLUSTERED,
+            "column": XL_CHART_TYPE.COLUMN_CLUSTERED,
             "line": XL_CHART_TYPE.LINE_MARKERS,
             "pie": XL_CHART_TYPE.PIE,
             "doughnut": XL_CHART_TYPE.DOUGHNUT,
+            "area": XL_CHART_TYPE.AREA,
         }
         if ctype not in types:
             raise ValueError(f"unknown chart type {ctype!r}; choose from {sorted(types)}")
@@ -518,13 +684,31 @@ class DeckBuilder:
             raise ValueError("chart layout requires at least one series")
         if ctype in ("pie", "doughnut") and len(series_list) != 1:
             raise ValueError("pie/doughnut charts require exactly one series")
-        series_colors = [self.theme["accent"], self.theme["accent2"], self.theme["accent3"]]
+        series_colors = chart.get("colors") or [
+            self.theme["accent"], self.theme["accent2"], self.theme["accent3"], self.theme["muted"]
+        ]
         graphic = slide.shapes.add_chart(
             types[ctype], Inches(0.9), Inches(1.7), Inches(self.content_w - 0.6),
             Inches(self.height_in - 2.6), data,
         )
         ch = graphic.chart
-        ch.has_legend = len(series_list) > 2
+        ch.has_legend = chart.get("legend", len(series_list) > 2)
+        unit = chart.get("unit")
+        x_title = chart.get("x_title")
+        y_title = chart.get("y_title")
+        if x_title:
+            try:
+                ch.category_axis.axis_title.text_frame.text = str(x_title)
+            except Exception:
+                pass
+        if y_title or unit:
+            try:
+                txt = str(y_title or "")
+                if unit:
+                    txt = f"{txt} ({unit})".strip() if txt else f"Value ({unit})"
+                ch.value_axis.axis_title.text_frame.text = txt
+            except Exception:
+                pass
         try:
             if ctype not in ("pie", "doughnut"):
                 ch.value_axis.tick_labels.font.size = Pt(self.sizes["caption"])
@@ -536,27 +720,38 @@ class DeckBuilder:
         except Exception:
             pass
         total_points = len(data.categories) * len(series_list)
+        show_values = chart.get("show_values", total_points <= 12)
         if ctype in ("pie", "doughnut"):
             try:
                 ch.plots[0].has_data_labels = True
                 dl = ch.plots[0].data_labels
                 dl.font.size = Pt(self.sizes["caption"] + 1)
                 dl.font.color.rgb = rgb(self.theme["text"])
+                if unit:
+                    try:
+                        dl.number_format = f'0.0"{unit}"'
+                    except Exception:
+                        pass
             except Exception:
                 pass
         else:
             try:
-                ch.plots[0].has_data_labels = total_points <= 12
+                ch.plots[0].has_data_labels = bool(show_values)
                 if ch.plots[0].has_data_labels:
                     dl = ch.plots[0].data_labels
                     dl.font.size = Pt(self.sizes["caption"] + 1)
                     dl.font.color.rgb = rgb(self.theme["text"])
                     dl.show_value = True
                     dl.show_category_name = False
+                    if unit:
+                        try:
+                            dl.number_format = f'0.0"{unit}"'
+                        except Exception:
+                            pass
             except Exception:
                 pass
         for i, s in enumerate(ch.series):
-            color = series_colors[i % len(series_colors)] if i < len(series_colors) else self.theme["muted"]
+            color = series_colors[i % len(series_colors)]
             try:
                 s.format.fill.solid()
                 s.format.fill.fore_color.rgb = rgb(color)
@@ -572,6 +767,94 @@ class DeckBuilder:
             except Exception:
                 pass
         self._notes(slide, slide_spec.get("notes"))
+
+    def _add_chart_matplotlib(self, slide, slide_spec, chart):
+        try:
+            import matplotlib
+
+            matplotlib.use("Agg")
+            import matplotlib.pyplot as plt
+        except Exception as exc:
+            raise ValueError(f"matplotlib is not available: {exc}")
+        ctype = chart.get("type", "bar")
+        categories = [str(c) for c in chart.get("categories", [])]
+        series_list = chart.get("series", [])
+        if not isinstance(series_list, (list, tuple)):
+            series_list = [series_list]
+        colors = chart.get("colors") or [
+            "#" + self.theme["accent"], "#" + self.theme["accent2"], "#" + self.theme["accent3"], "#" + self.theme["muted"]
+        ]
+        unit = chart.get("unit")
+        fig, ax = plt.subplots(figsize=(9, 4.5))
+        # theme-ish styling
+        fig.patch.set_facecolor("#" + self.theme["bg"])
+        ax.set_facecolor("#" + self.theme["surface"])
+        ax.tick_params(colors="#" + self.theme["text"], labelsize=9)
+        ax.xaxis.label.set_color("#" + self.theme["text"])
+        ax.yaxis.label.set_color("#" + self.theme["text"])
+        ax.title.set_color("#" + self.theme["text"])
+        code = chart.get("code")
+        if code:
+            ns = {
+                "plt": plt, "fig": fig, "ax": ax, "categories": categories,
+                "series_list": series_list, "colors": colors, "unit": unit,
+                "theme": self.theme,
+            }
+            exec(code, ns)
+        else:
+            if ctype in ("bar", "column"):
+                width = 0.8 / max(1, len(series_list))
+                x = range(len(categories))
+                for i, s in enumerate(series_list):
+                    vals = s.get("values", []) if isinstance(s, dict) else s
+                    offset = (i - (len(series_list) - 1) / 2) * width
+                    xs = [xi + offset for xi in x]
+                    ax.bar(xs, vals, width=width, label=s.get("name") if isinstance(s, dict) else None,
+                           color=colors[i % len(colors)])
+                ax.set_xticks(list(x))
+                ax.set_xticklabels(categories, rotation=30, ha="right")
+            elif ctype == "line":
+                for i, s in enumerate(series_list):
+                    vals = s.get("values", []) if isinstance(s, dict) else s
+                    ax.plot(categories, vals, marker="o", label=s.get("name") if isinstance(s, dict) else None,
+                            color=colors[i % len(colors)])
+                plt.xticks(rotation=30, ha="right")
+            elif ctype in ("pie", "doughnut"):
+                s = series_list[0]
+                vals = s.get("values", []) if isinstance(s, dict) else s
+                wedges, _ = ax.pie(vals, labels=categories, colors=colors)
+                if ctype == "doughnut":
+                    centre = plt.Circle((0, 0), 0.55, fc="#" + self.theme["bg"])
+                    fig.gca().add_artist(centre)
+            elif ctype == "scatter":
+                for i, s in enumerate(series_list):
+                    vals = s.get("values", []) if isinstance(s, dict) else s
+                    xs = s.get("x", list(range(len(vals)))) if isinstance(s, dict) else list(range(len(vals)))
+                    ax.scatter(xs, vals, color=colors[i % len(colors)], label=s.get("name") if isinstance(s, dict) else None)
+            if chart.get("x_title"):
+                ax.set_xlabel(chart["x_title"])
+            if chart.get("y_title") or unit:
+                ax.set_ylabel(f"{chart.get('y_title', '')} ({unit})".strip(" ()") if False else (chart.get("y_title") or "") + (f" ({unit})" if unit else ""))
+            if chart.get("legend", len(series_list) > 1):
+                ax.legend(fontsize=8)
+            if chart.get("show_values", True) and ctype in ("bar", "column"):
+                for container in ax.containers:
+                    ax.bar_label(container, fontsize=8, color="#" + self.theme["text"])
+        # save
+        fd, tmp_path = tempfile.mkstemp(suffix=".png")
+        os.close(fd)
+        fig.tight_layout()
+        fig.savefig(tmp_path, dpi=150, facecolor=fig.get_facecolor())
+        plt.close(fig)
+        pic = slide.shapes.add_picture(tmp_path, Inches(0.9), Inches(1.7), width=Inches(self.content_w - 0.6))
+        if pic.height > Inches(self.height_in - 2.6):
+            ratio = (self.height_in - 2.6) / (pic.height / 914400)
+            pic.width = Emu(int(pic.width * ratio))
+            pic.height = Emu(int(pic.height * ratio))
+        try:
+            os.remove(tmp_path)
+        except OSError:
+            pass
 
     def add_closing(self, slide_spec):
         slide = self._new_slide()
@@ -618,22 +901,27 @@ class DeckBuilder:
         for i, it in enumerate(items):
             x = self.margin + i * (card_w + gap)
             self._card(slide, x, y, card_w, h, self.theme["surface"])
+            icon = it.get("icon")
             value = it.get("value", it.get("number", it.get("stat", "")))
             label = it.get("label", it.get("title", it.get("name", "")))
             delta = it.get("delta", it.get("change", None))
-            _, tf = self._textbox(slide, x + pad, y + 0.4, card_w - 2 * pad, 1.3)
+            iy = y + 0.25
+            if icon:
+                self._add_icon(slide, x + pad, iy, card_w - 2 * pad, 0.7, icon, it.get("icon_color"))
+                iy += 0.75
+            _, tf = self._textbox(slide, x + pad, iy, card_w - 2 * pad, 1.2)
             tf.paragraphs[0].alignment = PP_ALIGN.CENTER
             run = tf.paragraphs[0].add_run()
             run.text = "" if value is None else str(value)
-            self._style_run(run, self.sizes["deck_title"], self.theme["accent"], bold=True,
+            self._style_run(run, self.sizes["deck_title"] - (4 if n > 4 else 0), self.theme["accent"], bold=True,
                             font=self.theme["title_font"])
-            _, tf = self._textbox(slide, x + pad, y + 1.8, card_w - 2 * pad, 0.8)
+            _, tf = self._textbox(slide, x + pad, iy + 1.2, card_w - 2 * pad, 0.8)
             tf.paragraphs[0].alignment = PP_ALIGN.CENTER
             run = tf.paragraphs[0].add_run()
             run.text = "" if label is None else str(label)
             self._style_run(run, self.sizes["body"], self.theme["text"])
             if delta is not None and str(delta).strip() != "":
-                _, tf = self._textbox(slide, x + pad, y + 2.6, card_w - 2 * pad, 0.5)
+                _, tf = self._textbox(slide, x + pad, iy + 2.0, card_w - 2 * pad, 0.5)
                 tf.paragraphs[0].alignment = PP_ALIGN.CENTER
                 run = tf.paragraphs[0].add_run()
                 run.text = str(delta)
@@ -653,21 +941,22 @@ class DeckBuilder:
         items = []
         for it in (raw if isinstance(raw, (list, tuple)) else [raw] if raw is not None else []):
             if it is None:
-                items.append({"title": "", "body": ""})
+                items.append({"title": "", "body": "", "icon": None})
                 continue
             if isinstance(it, str):
-                items.append({"title": it, "body": ""})
+                items.append({"title": it, "body": "", "icon": None})
                 continue
             if isinstance(it, (list, tuple)):
-                items.append({"title": it[0] if len(it) > 0 else "", "body": it[1] if len(it) > 1 else ""})
+                items.append({"title": it[0] if len(it) > 0 else "", "body": it[1] if len(it) > 1 else "", "icon": it[2] if len(it) > 2 and not isinstance(it[2], (list, tuple)) else None})
                 continue
             if isinstance(it, dict):
                 items.append({
                     "title": it.get("title", it.get("name", it.get("heading", ""))),
                     "body": it.get("body", it.get("description", it.get("text", ""))),
+                    "icon": it.get("icon"),
                 })
                 continue
-            items.append({"title": str(it), "body": ""})
+            items.append({"title": str(it), "body": "", "icon": None})
         if not items:
             self._notes(slide, slide_spec.get("notes"))
             return
@@ -692,7 +981,8 @@ class DeckBuilder:
             tf.vertical_anchor = MSO_ANCHOR.MIDDLE
             tf.paragraphs[0].alignment = PP_ALIGN.CENTER
             run = tf.paragraphs[0].add_run()
-            run.text = str(i + 1)
+            icon = it.get("icon")
+            run.text = str(icon) if icon else str(i + 1)
             accent_lum = _hex_luminance(self.theme["accent"])
             number_color = self.theme["bg"] if accent_lum > 0.2 else self.theme["band_text"]
             if number_color == self.theme["bg"] and _hex_luminance(self.theme["bg"]) > 0.5:
@@ -728,6 +1018,7 @@ class DeckBuilder:
         n = max(1, min(4, max(len(headers), len(columns))))
         if n > 4:
             raise ValueError("comparison layout supports at most 4 columns")
+        highlight = slide_spec.get("highlight", slide_spec.get("emphasis"))
         gap = 0.3
         col_w = (self.content_w - gap * (n - 1)) / n
         if col_w <= 0:
@@ -740,15 +1031,23 @@ class DeckBuilder:
         for i in range(n):
             x = self.margin + i * (col_w + gap)
             hdr = headers[i] if i < len(headers) else ""
+            hdr_color = self.theme["band"]
+            hdr_text_color = self.theme["band_text"]
+            if highlight is not None and i == highlight:
+                hdr_color = self.theme["accent"]
+                hdr_text_color = self.theme["band_text"]
             if str(hdr).strip() != "":
-                self._rect(slide, x, y, col_w, header_h, self.theme["band"])
+                self._rect(slide, x, y, col_w, header_h, hdr_color)
                 _, tf = self._textbox(slide, x + pad, y, col_w - 2 * pad, header_h)
                 tf.vertical_anchor = MSO_ANCHOR.MIDDLE
                 tf.paragraphs[0].alignment = PP_ALIGN.CENTER
                 run = tf.paragraphs[0].add_run()
                 run.text = str(hdr)
-                self._style_run(run, self.sizes["body"], self.theme["band_text"], bold=True)
-            self._card(slide, x, body_y, col_w, body_h, self.theme["surface"])
+                self._style_run(run, self.sizes["body"], hdr_text_color, bold=True)
+            card_color = self.theme["surface"]
+            if highlight is not None and i == highlight:
+                card_color = self.theme["surface"]
+            self._card(slide, x, body_y, col_w, body_h, card_color)
             items = columns[i] if i < len(columns) else []
             if isinstance(items, dict):
                 items = items.get("items", items.get("bullets", items.get("points", [])))
@@ -767,16 +1066,17 @@ class DeckBuilder:
         items = []
         for it in (raw if isinstance(raw, (list, tuple)) else [raw] if raw is not None else []):
             if it is None:
-                items.append({"title": "", "body": "", "bullets": []})
+                items.append({"title": "", "body": "", "bullets": [], "icon": None})
                 continue
             if isinstance(it, str):
-                items.append({"title": it, "body": "", "bullets": []})
+                items.append({"title": it, "body": "", "bullets": [], "icon": None})
                 continue
             if isinstance(it, (list, tuple)):
                 items.append({
                     "title": it[0] if len(it) > 0 else "",
                     "body": it[1] if len(it) > 1 else "",
                     "bullets": it[2] if len(it) > 2 else [],
+                    "icon": it[3] if len(it) > 3 else None,
                 })
                 continue
             if isinstance(it, dict):
@@ -784,26 +1084,45 @@ class DeckBuilder:
                     "title": it.get("title", it.get("heading", it.get("name", ""))),
                     "body": it.get("body", it.get("text", it.get("description", ""))),
                     "bullets": it.get("bullets", it.get("items", it.get("points", []))),
+                    "icon": it.get("icon"),
                 })
                 continue
-            items.append({"title": str(it), "body": "", "bullets": []})
+            items.append({"title": str(it), "body": "", "bullets": [], "icon": None})
         if not items:
             self._notes(slide, slide_spec.get("notes"))
             return
         n = len(items)
-        if n > 4:
-            raise ValueError("cards layout supports at most 4 cards")
+        if n > 6:
+            raise ValueError("cards layout supports at most 6 cards")
+        cols = slide_spec.get("columns")
+        if not cols:
+            if n <= 3:
+                cols = n
+            elif n == 4:
+                cols = 2
+            elif n <= 6:
+                cols = 3
+        cols = max(1, min(n, int(cols)))
+        rows = math.ceil(n / cols)
         gap = 0.3
-        card_w = (self.content_w - gap * (n - 1)) / n
+        card_w = (self.content_w - gap * (cols - 1)) / cols
         if card_w <= 0:
-            raise ValueError("cards layout: too many cards for slide width")
-        y = 1.6
-        h = self.height_in - 2.4
+            raise ValueError("cards layout: too many columns for slide width")
+        y0 = 1.6
+        total_h = self.height_in - 2.4
+        card_h = (total_h - gap * (rows - 1)) / rows
         pad = self.card_padding
         for i, it in enumerate(items):
-            x = self.margin + i * (card_w + gap)
-            self._card(slide, x, y, card_w, h, self.theme["surface"])
-            _, tf = self._textbox(slide, x + pad, y + 0.25, card_w - 2 * pad, 0.6)
+            r = i // cols
+            c = i % cols
+            x = self.margin + c * (card_w + gap)
+            y = y0 + r * (card_h + gap)
+            self._card(slide, x, y, card_w, card_h, self.theme["surface"])
+            iy = y + 0.2
+            if it.get("icon"):
+                self._add_icon(slide, x + pad, iy, card_w - 2 * pad, 0.6, it["icon"], it.get("icon_color"))
+                iy += 0.65
+            _, tf = self._textbox(slide, x + pad, iy, card_w - 2 * pad, 0.5)
             run = tf.paragraphs[0].add_run()
             run.text = str(it.get("title", ""))
             self._style_run(run, self.sizes["body"] + 1, self.theme["text"], bold=True)
@@ -811,18 +1130,119 @@ class DeckBuilder:
             bullets = it.get("bullets", [])
             if not isinstance(bullets, (list, tuple)):
                 bullets = [bullets]
-            body_y = y + 0.95
+            body_y = iy + 0.55
             if body:
-                _, tf = self._textbox(slide, x + pad, body_y, card_w - 2 * pad, 1.0)
+                _, tf = self._textbox(slide, x + pad, body_y, card_w - 2 * pad, 0.9)
                 run = tf.paragraphs[0].add_run()
                 run.text = str(body)
                 self._style_run(run, self.sizes["body"] - 1, self.theme["muted"])
-                body_y += 1.1
+                body_y += 0.95
             if bullets:
                 self._add_bullets(
-                    slide, bullets, x + pad, body_y, card_w - 2 * pad, y + h - body_y - 0.2,
+                    slide, bullets, x + pad, body_y, card_w - 2 * pad, y + card_h - body_y - 0.15,
                     self.sizes["body"] - 2, self.theme["text"],
                 )
+        self._notes(slide, slide_spec.get("notes"))
+
+    def add_problem_solution_impact(self, slide_spec):
+        slide = self._new_slide()
+        self._heading(slide, slide_spec.get("title", ""), self.sizes["title"], self.theme["text"])
+        # accept either nested dict or three keys
+        psi = slide_spec.get("psi", {}) or {}
+        problem = slide_spec.get("problem", psi.get("problem", {}))
+        solution = slide_spec.get("solution", psi.get("solution", {}))
+        impact = slide_spec.get("impact", psi.get("impact", {}))
+        items = [
+            ("Problem", problem, self.theme["accent3"]),
+            ("Solution", solution, self.theme["accent"]),
+            ("Impact", impact, self.theme["accent2"]),
+        ]
+        n = 3
+        gap = 0.3
+        col_w = (self.content_w - gap * (n - 1)) / n
+        y = 1.6
+        header_h = 0.5
+        body_y = y + header_h + 0.1
+        body_h = self.height_in - body_y - 0.7
+        pad = self.card_padding
+        for idx, (label, data, color) in enumerate(items):
+            x = self.margin + idx * (col_w + gap)
+            title = label
+            body = ""
+            bullets = []
+            if isinstance(data, dict):
+                title = data.get("title", data.get("heading", label))
+                body = data.get("body", data.get("text", data.get("description", "")))
+                bullets = data.get("bullets", data.get("items", data.get("points", [])))
+            elif isinstance(data, str):
+                body = data
+            elif isinstance(data, (list, tuple)):
+                bullets = list(data)
+            if not isinstance(bullets, (list, tuple)):
+                bullets = [bullets] if bullets else []
+            self._rect(slide, x, y, col_w, header_h, color)
+            _, tf = self._textbox(slide, x + pad, y, col_w - 2 * pad, header_h)
+            tf.vertical_anchor = MSO_ANCHOR.MIDDLE
+            tf.paragraphs[0].alignment = PP_ALIGN.CENTER
+            run = tf.paragraphs[0].add_run()
+            run.text = str(title)
+            _tc = "1A1A1A" if _hex_luminance(color) > 0.35 else "FFFFFF"
+            self._style_run(run, self.sizes["body"], _tc, bold=True)
+            self._card(slide, x, body_y, col_w, body_h, self.theme["surface"])
+            by = body_y + 0.2
+            if body:
+                _, tf = self._textbox(slide, x + pad, by, col_w - 2 * pad, 0.9)
+                run = tf.paragraphs[0].add_run()
+                run.text = str(body)
+                self._style_run(run, self.sizes["body"] - 1, self.theme["muted"])
+                by += 0.95
+            if bullets:
+                self._add_bullets(slide, bullets, x + pad, by, col_w - 2 * pad, body_y + body_h - by - 0.15,
+                                  self.sizes["body"] - 2, self.theme["text"])
+        self._notes(slide, slide_spec.get("notes"))
+
+    def add_before_after(self, slide_spec):
+        slide = self._new_slide()
+        self._heading(slide, slide_spec.get("title", ""), self.sizes["title"], self.theme["text"])
+        before = slide_spec.get("before", {})
+        after = slide_spec.get("after", {})
+        if not isinstance(before, dict):
+            before = {"title": "Before", "items": before if isinstance(before, (list, tuple)) else [before]}
+        if not isinstance(after, dict):
+            after = {"title": "After", "items": after if isinstance(after, (list, tuple)) else [after]}
+        before.setdefault("title", "Before")
+        after.setdefault("title", "After")
+        before_items = before.get("items", before.get("bullets", before.get("points", [])))
+        after_items = after.get("items", after.get("bullets", after.get("points", [])))
+        if isinstance(before_items, str):
+            before_items = [before_items]
+        if isinstance(after_items, str):
+            after_items = [after_items]
+        n = 2
+        gap = 0.4
+        col_w = (self.content_w - gap) / n
+        y = 1.6
+        header_h = 0.5
+        body_y = y + header_h + 0.15
+        body_h = self.height_in - body_y - 0.7
+        pad = self.card_padding
+        for idx, (data, title, hdr_color) in enumerate((
+            (before, before.get("title", "Before"), self.theme["accent3"]),
+            (after, after.get("title", "After"), self.theme["accent2"]),
+        )):
+            x = self.margin + idx * (col_w + gap)
+            items = before_items if idx == 0 else after_items
+            self._rect(slide, x, y, col_w, header_h, hdr_color)
+            _, tf = self._textbox(slide, x + pad, y, col_w - 2 * pad, header_h)
+            tf.vertical_anchor = MSO_ANCHOR.MIDDLE
+            tf.paragraphs[0].alignment = PP_ALIGN.CENTER
+            run = tf.paragraphs[0].add_run()
+            run.text = str(title)
+            _tc = "1A1A1A" if _hex_luminance(hdr_color) > 0.35 else "FFFFFF"
+            self._style_run(run, self.sizes["body"], _tc, bold=True)
+            self._card(slide, x, body_y, col_w, body_h, self.theme["surface"])
+            self._add_bullets(slide, items or [], x + pad, body_y + 0.2, col_w - 2 * pad, body_h - 0.4,
+                              self.sizes["body"] - 1, self.theme["text"])
         self._notes(slide, slide_spec.get("notes"))
 
     def build(self, spec: dict) -> None:
@@ -840,6 +1260,8 @@ class DeckBuilder:
             "timeline": self.add_timeline,
             "comparison": self.add_comparison,
             "cards": self.add_cards,
+            "before_after": self.add_before_after,
+            "problem_solution_impact": self.add_problem_solution_impact,
         }
         slides = spec.get("slides", [])
         if not slides:

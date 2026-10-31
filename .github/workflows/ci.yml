@@ -23,4 +23,4 @@ jobs:
           python scripts/build_deck.py examples/layouts-deck.json -o /tmp/layouts.pptx --force
           python scripts/validate_deck.py /tmp/layouts.pptx
       - name: Run layout edge-case tests
-        run: python -m unittest tests.test_layouts
+        run: python -m unittest tests.test_layouts tests.test_examples
