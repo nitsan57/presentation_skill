@@ -22,10 +22,12 @@ in the [Kilo marketplace](https://github.com/Kilo-Org/kilo-marketplace).
 
 ## Install
 
-Copy the `skills/presentation-creator/` directory into a Kilo skills location:
+Copy this directory (the repo root) into a Kilo skills location:
 
 - Project-local: `.kilo/skills/presentation-creator/`
 - Global: `~/.config/kilo/skills/presentation-creator/`
+
+The skill lives at the repository root, so copy the whole repo (or its contents) into that directory.
 
 Or install it from the Kilo marketplace.
 
@@ -45,8 +47,8 @@ optional (PDF preview only).
 Author a deck spec (`examples/example-deck.json` is a complete sample) and build it:
 
 ```sh
-python3 skills/presentation-creator/scripts/build_deck.py deck.json -o deck.pptx
-python3 skills/presentation-creator/scripts/validate_deck.py deck.pptx
+python3 scripts/build_deck.py deck.json -o deck.pptx
+python3 scripts/validate_deck.py deck.pptx
 ```
 
 The validator exits `0` when the deck passes (warnings-only also exits `0`) and `1` when it
@@ -58,12 +60,12 @@ pitch, keynote, or slide outline (and on `*.pptx` files).
 ## Layout
 
 ```
-skills/presentation-creator/
+.
 ├── SKILL.md
 ├── LICENSE
 ├── references/   python-pptx-recipes.md, design-system.md, troubleshooting.md
-├── scripts/      build_deck.py, validate_deck.py
-└── examples/     example-deck.json, example-brief.md
+├── scripts/      build_deck.py, validate_deck.py, render_preview.py, test_deck.py
+└── examples/     example-deck.json, layouts-deck.json, example-brief.md
 ```
 
 ## License

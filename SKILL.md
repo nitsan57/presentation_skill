@@ -9,7 +9,7 @@ compatibility: Requires Python 3.9+ with python-pptx (pip install python-pptx); 
 metadata:
   category: productivity
   author: nitsan57
-  version: "1.1.0"
+  version: "1.2.0"
   suggest_for:
     filename:
       - '*.pptx'
@@ -127,7 +127,7 @@ Top-level keys:
 Each slide: `layout` ∈ `title, section, bullets, two_column, image, table, quote, chart,
 closing, stats, timeline, comparison, cards`, plus `notes`. Common fields: `title`, `subtitle`, `bullets` (strings), `columns`
 (two lists for `two_column`), `table` (`headers` + `rows`), `image` (`path`), `quote`
-(`text` + `attribution`), `chart` (`type` ∈ `bar, line, pie`, `categories`, `series`
+(`text` + `attribution`), `chart` (`type` ∈ `bar, line, pie, doughnut`, `categories`, `series`
 `[{name, values}]`), `stats` (`stats: [{value,label,delta}]`),
 `timeline` (`steps: [{title,body}]`), `comparison` (`headers` +
 `columns`), `cards` (`cards: [{title,body,bullets}]`).

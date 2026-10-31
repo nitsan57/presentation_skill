@@ -20,6 +20,7 @@ VALIDATOR = ROOT / "scripts" / "validate_deck.py"
 CASES = [
     (ROOT / "examples" / "example-deck.json", 7),
     (ROOT / "examples" / "layouts-deck.json", 6),
+    (ROOT / "examples" / "edge-cases-deck.json", 9),
 ]
 
 

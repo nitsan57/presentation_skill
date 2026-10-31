@@ -191,8 +191,12 @@ def validate(path: Path) -> Report:
         fill_shapes = []
         for shape in slide.shapes:
             color = _solid_fill_color(shape)
-            if color is not None:
-                fill_shapes.append((shape, _shape_bbox(shape), color))
+            if color is None:
+                continue
+            _x, _y, _w, _h = _shape_bbox(shape)
+            if _w < int(0.05 * 914400) or _h < int(0.05 * 914400):
+                continue
+            fill_shapes.append((shape, _shape_bbox(shape), color))
 
         # -- bounds -----------------------------------------------------
         for shape in slide.shapes:

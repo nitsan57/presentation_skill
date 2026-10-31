@@ -108,6 +108,23 @@ def rgb(hexstr: str) -> RGBColor:
     return RGBColor(int(hexstr[0:2], 16), int(hexstr[2:4], 16), int(hexstr[4:6], 16))
 
 
+
+def _hex_luminance(hexstr: str) -> float:
+    hexstr = str(hexstr).lstrip("#")
+    try:
+        r = int(hexstr[0:2], 16) / 255.0
+        g = int(hexstr[2:4], 16) / 255.0
+        b = int(hexstr[4:6], 16) / 255.0
+    except Exception:
+        return 0.5
+
+    def ch(c):
+        return c / 12.92 if c <= 0.03928 else ((c + 0.055) / 1.055) ** 2.4
+
+    return 0.2126 * ch(r) + 0.7152 * ch(g) + 0.0722 * ch(b)
+
+
+
 class DeckBuilder:
     def __init__(self, spec: dict):
         theme_spec = spec.get("theme", "clean-light")
@@ -157,6 +174,8 @@ class DeckBuilder:
         self.deck_title = spec.get("title")
         self.deck_subtitle = spec.get("subtitle")
         self._slide_no = 0
+        self.accent_bar = bool(spec.get("accent_bar", True))
+        self.card_padding = 0.25
 
     # -- primitives -----------------------------------------------------
 
@@ -223,6 +242,11 @@ class DeckBuilder:
         self._style_run(
             run, size, color, bold=True, font=self.theme["title_font"]
         )
+        if getattr(self, "accent_bar", True):
+            try:
+                self._rect(slide, x, y + h - 0.26, min(w, 1.6), 0.03, self.theme["accent"])
+            except Exception:
+                pass
         return box
 
     def _notes(self, slide, notes) -> None:
@@ -263,11 +287,21 @@ class DeckBuilder:
         self._style_run(run, self.sizes["caption"], footer_color)
 
     def _normalize_items(self, raw):
+        if raw is None:
+            return []
+        if isinstance(raw, dict):
+            raw = [raw]
+        if not isinstance(raw, (list, tuple)):
+            raw = [raw]
         items = []
-        for it in (raw or []):
+        for it in raw:
+            if it is None:
+                items.append({})
+                continue
             if isinstance(it, dict):
-                items.append(it)
-            elif isinstance(it, (list, tuple)):
+                items.append(dict(it))
+                continue
+            if isinstance(it, (list, tuple)):
                 items.append({
                     "value": it[0] if len(it) > 0 else "",
                     "label": it[1] if len(it) > 1 else "",
@@ -275,9 +309,10 @@ class DeckBuilder:
                     "title": it[0] if len(it) > 0 else "",
                     "body": it[1] if len(it) > 1 else "",
                     "items": it[2] if len(it) > 2 else None,
+                    "bullets": it[2] if len(it) > 2 and isinstance(it[2], (list, tuple)) else [],
                 })
-            else:
-                items.append({"value": str(it), "label": "", "title": str(it), "body": ""})
+                continue
+            items.append({"value": str(it), "label": "", "title": str(it), "body": "", "bullets": []})
         return items
 
     # -- layouts --------------------------------------------------------
@@ -344,11 +379,12 @@ class DeckBuilder:
         columns = slide_spec.get("columns", [[], []])
         left = columns[0] if len(columns) > 0 else []
         right = columns[1] if len(columns) > 1 else []
+        pad = self.card_padding
         for idx, items in enumerate((left, right)):
             x = self.margin + idx * (col_w + gap)
             self._card(slide, x, 1.6, col_w, self.height_in - 2.2, self.theme["surface"])
             self._add_bullets(
-                slide, items, x + 0.3, 1.9, col_w - 0.6, self.height_in - 2.8,
+                slide, items, x + pad, 1.9, col_w - 2 * pad, self.height_in - 2.8,
                 self.sizes["body"] - 1, self.theme["text"],
             )
         self._notes(slide, slide_spec.get("notes"))
@@ -465,34 +501,62 @@ class DeckBuilder:
             "bar": XL_CHART_TYPE.COLUMN_CLUSTERED,
             "line": XL_CHART_TYPE.LINE_MARKERS,
             "pie": XL_CHART_TYPE.PIE,
+            "doughnut": XL_CHART_TYPE.DOUGHNUT,
         }
         if ctype not in types:
             raise ValueError(f"unknown chart type {ctype!r}; choose from {sorted(types)}")
         data = CategoryChartData()
         data.categories = [str(c) for c in chart.get("categories", [])]
         series_list = chart.get("series", [])
+        if not isinstance(series_list, (list, tuple)):
+            series_list = [series_list]
         for series in series_list:
+            if not isinstance(series, dict):
+                raise ValueError("chart series must be objects with name/values")
             data.add_series(str(series.get("name", "Series")), tuple(series.get("values", [])))
         if not series_list:
             raise ValueError("chart layout requires at least one series")
-        if ctype == "pie" and len(series_list) != 1:
-            raise ValueError("pie charts require exactly one series")
+        if ctype in ("pie", "doughnut") and len(series_list) != 1:
+            raise ValueError("pie/doughnut charts require exactly one series")
+        series_colors = [self.theme["accent"], self.theme["accent2"], self.theme["accent3"]]
         graphic = slide.shapes.add_chart(
             types[ctype], Inches(0.9), Inches(1.7), Inches(self.content_w - 0.6),
             Inches(self.height_in - 2.6), data,
         )
         ch = graphic.chart
         ch.has_legend = len(series_list) > 2
-        if ctype == "pie":
-            ch.plots[0].has_data_labels = True
+        try:
+            if ctype not in ("pie", "doughnut"):
+                ch.value_axis.tick_labels.font.size = Pt(self.sizes["caption"])
+                ch.category_axis.tick_labels.font.size = Pt(self.sizes["caption"])
+                try:
+                    ch.value_axis.major_gridlines.format.line.color.rgb = rgb(self.theme["muted"])
+                except Exception:
+                    pass
+        except Exception:
+            pass
+        total_points = len(data.categories) * len(series_list)
+        if ctype in ("pie", "doughnut"):
+            try:
+                ch.plots[0].has_data_labels = True
+                dl = ch.plots[0].data_labels
+                dl.font.size = Pt(self.sizes["caption"] + 1)
+                dl.font.color.rgb = rgb(self.theme["text"])
+            except Exception:
+                pass
         else:
             try:
-                total_points = len(data.categories) * len(series_list)
                 ch.plots[0].has_data_labels = total_points <= 12
+                if ch.plots[0].has_data_labels:
+                    dl = ch.plots[0].data_labels
+                    dl.font.size = Pt(self.sizes["caption"] + 1)
+                    dl.font.color.rgb = rgb(self.theme["text"])
+                    dl.show_value = True
+                    dl.show_category_name = False
             except Exception:
                 pass
         for i, s in enumerate(ch.series):
-            color = self.theme["accent"] if i == 0 else self.theme["muted"]
+            color = series_colors[i % len(series_colors)] if i < len(series_colors) else self.theme["muted"]
             try:
                 s.format.fill.solid()
                 s.format.fill.fore_color.rgb = rgb(color)
@@ -500,6 +564,11 @@ class DeckBuilder:
                 pass
             try:
                 s.format.line.color.rgb = rgb(color)
+                s.format.line.width = Pt(2.25)
+            except Exception:
+                pass
+            try:
+                s.marker.style = 2  # circle
             except Exception:
                 pass
         self._notes(slide, slide_spec.get("notes"))
@@ -531,29 +600,40 @@ class DeckBuilder:
     def add_stats(self, slide_spec):
         slide = self._new_slide()
         self._heading(slide, slide_spec.get("title", ""), self.sizes["title"], self.theme["text"])
-        items = self._normalize_items(slide_spec.get("stats", slide_spec.get("items", [])))
-        n = max(1, len(items))
+        raw = slide_spec.get("stats", slide_spec.get("items", slide_spec.get("kpis", [])))
+        items = self._normalize_items(raw)
+        if not items:
+            self._notes(slide, slide_spec.get("notes"))
+            return
+        n = len(items)
+        if n > 6:
+            raise ValueError("stats layout supports at most 6 items")
         gap = 0.25
         card_w = (self.content_w - gap * (n - 1)) / n
+        if card_w <= 0:
+            raise ValueError("stats layout: too many items for slide width")
         y = 1.6
         h = self.height_in - 2.4
+        pad = self.card_padding
         for i, it in enumerate(items):
             x = self.margin + i * (card_w + gap)
             self._card(slide, x, y, card_w, h, self.theme["surface"])
-            _, tf = self._textbox(slide, x + 0.2, y + 0.5, card_w - 0.4, 1.3)
+            value = it.get("value", it.get("number", it.get("stat", "")))
+            label = it.get("label", it.get("title", it.get("name", "")))
+            delta = it.get("delta", it.get("change", None))
+            _, tf = self._textbox(slide, x + pad, y + 0.4, card_w - 2 * pad, 1.3)
             tf.paragraphs[0].alignment = PP_ALIGN.CENTER
             run = tf.paragraphs[0].add_run()
-            run.text = str(it.get("value", ""))
+            run.text = "" if value is None else str(value)
             self._style_run(run, self.sizes["deck_title"], self.theme["accent"], bold=True,
                             font=self.theme["title_font"])
-            _, tf = self._textbox(slide, x + 0.2, y + 1.9, card_w - 0.4, 0.7)
+            _, tf = self._textbox(slide, x + pad, y + 1.8, card_w - 2 * pad, 0.8)
             tf.paragraphs[0].alignment = PP_ALIGN.CENTER
             run = tf.paragraphs[0].add_run()
-            run.text = str(it.get("label", ""))
+            run.text = "" if label is None else str(label)
             self._style_run(run, self.sizes["body"], self.theme["text"])
-            delta = it.get("delta")
             if delta is not None and str(delta).strip() != "":
-                _, tf = self._textbox(slide, x + 0.2, y + 2.6, card_w - 0.4, 0.5)
+                _, tf = self._textbox(slide, x + pad, y + 2.6, card_w - 2 * pad, 0.5)
                 tf.paragraphs[0].alignment = PP_ALIGN.CENTER
                 run = tf.paragraphs[0].add_run()
                 run.text = str(delta)
@@ -569,30 +649,43 @@ class DeckBuilder:
     def add_timeline(self, slide_spec):
         slide = self._new_slide()
         self._heading(slide, slide_spec.get("title", ""), self.sizes["title"], self.theme["text"])
-        raw = slide_spec.get("steps", slide_spec.get("items", []))
-        items = self._normalize_items(raw)
-        # allow plain strings
-        norm = []
-        for it in raw or []:
+        raw = slide_spec.get("steps", slide_spec.get("items", slide_spec.get("stages", [])))
+        items = []
+        for it in (raw if isinstance(raw, (list, tuple)) else [raw] if raw is not None else []):
+            if it is None:
+                items.append({"title": "", "body": ""})
+                continue
             if isinstance(it, str):
-                norm.append({"title": it, "body": ""})
-            elif isinstance(it, dict):
-                norm.append(it)
-            elif isinstance(it, (list, tuple)):
-                norm.append({"title": it[0] if len(it) > 0 else "", "body": it[1] if len(it) > 1 else ""})
-            else:
-                norm.append({"title": str(it), "body": ""})
-        items = norm
-        n = max(1, len(items))
+                items.append({"title": it, "body": ""})
+                continue
+            if isinstance(it, (list, tuple)):
+                items.append({"title": it[0] if len(it) > 0 else "", "body": it[1] if len(it) > 1 else ""})
+                continue
+            if isinstance(it, dict):
+                items.append({
+                    "title": it.get("title", it.get("name", it.get("heading", ""))),
+                    "body": it.get("body", it.get("description", it.get("text", ""))),
+                })
+                continue
+            items.append({"title": str(it), "body": ""})
+        if not items:
+            self._notes(slide, slide_spec.get("notes"))
+            return
+        n = len(items)
+        if n > 6:
+            raise ValueError("timeline layout supports at most 6 steps")
         gap = 0.2
         card_w = (self.content_w - gap * (n - 1)) / n
+        if card_w <= 0:
+            raise ValueError("timeline layout: too many steps for slide width")
         y = 1.7
         card_h = self.height_in - 2.5
         if n > 1:
             self._rect(slide, self.margin + 0.5, y + 0.45, self.content_w - 1.0, 0.06, self.theme["muted"])
+        circle = 0.6
+        pad = self.card_padding
         for i, it in enumerate(items):
             x = self.margin + i * (card_w + gap)
-            circle = 0.6
             cx = x + (card_w - circle) / 2
             self._rect(slide, cx, y + 0.15, circle, circle, self.theme["accent"], shape=MSO_SHAPE.OVAL)
             _, tf = self._textbox(slide, cx, y + 0.15, circle, circle)
@@ -600,14 +693,18 @@ class DeckBuilder:
             tf.paragraphs[0].alignment = PP_ALIGN.CENTER
             run = tf.paragraphs[0].add_run()
             run.text = str(i + 1)
-            self._style_run(run, self.sizes["body"], self.theme["band_text"], bold=True,
+            accent_lum = _hex_luminance(self.theme["accent"])
+            number_color = self.theme["bg"] if accent_lum > 0.2 else self.theme["band_text"]
+            if number_color == self.theme["bg"] and _hex_luminance(self.theme["bg"]) > 0.5:
+                number_color = "1A1A1A"
+            self._style_run(run, self.sizes["body"], number_color, bold=True,
                             font=self.theme["title_font"])
-            _, tf = self._textbox(slide, x + 0.15, y + 0.9, card_w - 0.3, 0.6)
+            _, tf = self._textbox(slide, x + pad, y + 0.9, card_w - 2 * pad, 0.6)
             tf.paragraphs[0].alignment = PP_ALIGN.CENTER
             run = tf.paragraphs[0].add_run()
             run.text = str(it.get("title", ""))
             self._style_run(run, self.sizes["body"], self.theme["text"], bold=True)
-            _, tf = self._textbox(slide, x + 0.15, y + 1.55, card_w - 0.3, card_h - 1.55)
+            _, tf = self._textbox(slide, x + pad, y + 1.55, card_w - 2 * pad, card_h - 1.55)
             tf.paragraphs[0].alignment = PP_ALIGN.CENTER
             run = tf.paragraphs[0].add_run()
             run.text = str(it.get("body", it.get("description", "")))
@@ -618,25 +715,34 @@ class DeckBuilder:
         slide = self._new_slide()
         self._heading(slide, slide_spec.get("title", ""), self.sizes["title"], self.theme["text"])
         headers = slide_spec.get("headers")
-        columns = slide_spec.get("columns", slide_spec.get("items", []))
-        if headers is None and columns and isinstance(columns[0], dict) and "header" in columns[0]:
-            headers = [c.get("header", "") for c in columns]
-            columns = [c.get("items", c.get("bullets", [])) for c in columns]
+        columns = slide_spec.get("columns", slide_spec.get("items", slide_spec.get("cols", [])))
+        if headers is None and isinstance(columns, (list, tuple)) and columns and isinstance(columns[0], dict) and ("header" in columns[0] or "title" in columns[0]):
+            headers = [c.get("header", c.get("title", "")) for c in columns]
+            columns = [c.get("items", c.get("bullets", c.get("points", []))) for c in columns]
         headers = headers or []
         columns = columns or []
-        n = max(1, min(3, max(len(headers), len(columns))))
+        if isinstance(columns, dict):
+            columns = list(columns.values())
+        if not isinstance(columns, (list, tuple)):
+            columns = [columns]
+        n = max(1, min(4, max(len(headers), len(columns))))
+        if n > 4:
+            raise ValueError("comparison layout supports at most 4 columns")
         gap = 0.3
         col_w = (self.content_w - gap * (n - 1)) / n
+        if col_w <= 0:
+            raise ValueError("comparison layout: too many columns for slide width")
         y = 1.6
         header_h = 0.5
         body_y = y + header_h + 0.15
         body_h = self.height_in - body_y - 0.7
+        pad = self.card_padding
         for i in range(n):
             x = self.margin + i * (col_w + gap)
             hdr = headers[i] if i < len(headers) else ""
             if str(hdr).strip() != "":
                 self._rect(slide, x, y, col_w, header_h, self.theme["band"])
-                _, tf = self._textbox(slide, x + 0.15, y, col_w - 0.3, header_h)
+                _, tf = self._textbox(slide, x + pad, y, col_w - 2 * pad, header_h)
                 tf.vertical_anchor = MSO_ANCHOR.MIDDLE
                 tf.paragraphs[0].alignment = PP_ALIGN.CENTER
                 run = tf.paragraphs[0].add_run()
@@ -645,9 +751,11 @@ class DeckBuilder:
             self._card(slide, x, body_y, col_w, body_h, self.theme["surface"])
             items = columns[i] if i < len(columns) else []
             if isinstance(items, dict):
-                items = items.get("items", items.get("bullets", []))
+                items = items.get("items", items.get("bullets", items.get("points", [])))
+            if isinstance(items, str):
+                items = [items]
             self._add_bullets(
-                slide, items or [], x + 0.25, body_y + 0.2, col_w - 0.5, body_h - 0.4,
+                slide, items or [], x + pad, body_y + 0.2, col_w - 2 * pad, body_h - 0.4,
                 self.sizes["body"] - 1, self.theme["text"],
             )
         self._notes(slide, slide_spec.get("notes"))
@@ -655,39 +763,64 @@ class DeckBuilder:
     def add_cards(self, slide_spec):
         slide = self._new_slide()
         self._heading(slide, slide_spec.get("title", ""), self.sizes["title"], self.theme["text"])
-        raw = slide_spec.get("cards", slide_spec.get("items", []))
+        raw = slide_spec.get("cards", slide_spec.get("items", slide_spec.get("tiles", [])))
         items = []
-        for it in raw or []:
+        for it in (raw if isinstance(raw, (list, tuple)) else [raw] if raw is not None else []):
+            if it is None:
+                items.append({"title": "", "body": "", "bullets": []})
+                continue
             if isinstance(it, str):
                 items.append({"title": it, "body": "", "bullets": []})
-            elif isinstance(it, dict):
-                items.append(it)
-            elif isinstance(it, (list, tuple)):
-                items.append({"title": it[0] if len(it) > 0 else "", "body": it[1] if len(it) > 1 else "", "bullets": it[2] if len(it) > 2 else []})
-            else:
-                items.append({"title": str(it), "body": "", "bullets": []})
-        n = max(1, len(items))
+                continue
+            if isinstance(it, (list, tuple)):
+                items.append({
+                    "title": it[0] if len(it) > 0 else "",
+                    "body": it[1] if len(it) > 1 else "",
+                    "bullets": it[2] if len(it) > 2 else [],
+                })
+                continue
+            if isinstance(it, dict):
+                items.append({
+                    "title": it.get("title", it.get("heading", it.get("name", ""))),
+                    "body": it.get("body", it.get("text", it.get("description", ""))),
+                    "bullets": it.get("bullets", it.get("items", it.get("points", []))),
+                })
+                continue
+            items.append({"title": str(it), "body": "", "bullets": []})
+        if not items:
+            self._notes(slide, slide_spec.get("notes"))
+            return
+        n = len(items)
+        if n > 4:
+            raise ValueError("cards layout supports at most 4 cards")
         gap = 0.3
         card_w = (self.content_w - gap * (n - 1)) / n
+        if card_w <= 0:
+            raise ValueError("cards layout: too many cards for slide width")
         y = 1.6
         h = self.height_in - 2.4
+        pad = self.card_padding
         for i, it in enumerate(items):
             x = self.margin + i * (card_w + gap)
             self._card(slide, x, y, card_w, h, self.theme["surface"])
-            _, tf = self._textbox(slide, x + 0.25, y + 0.25, card_w - 0.5, 0.6)
+            _, tf = self._textbox(slide, x + pad, y + 0.25, card_w - 2 * pad, 0.6)
             run = tf.paragraphs[0].add_run()
-            run.text = str(it.get("title", it.get("heading", "")))
+            run.text = str(it.get("title", ""))
             self._style_run(run, self.sizes["body"] + 1, self.theme["text"], bold=True)
-            body = it.get("body", it.get("text", ""))
+            body = it.get("body", "")
             bullets = it.get("bullets", [])
+            if not isinstance(bullets, (list, tuple)):
+                bullets = [bullets]
+            body_y = y + 0.95
             if body:
-                _, tf = self._textbox(slide, x + 0.25, y + 0.95, card_w - 0.5, 1.2)
+                _, tf = self._textbox(slide, x + pad, body_y, card_w - 2 * pad, 1.0)
                 run = tf.paragraphs[0].add_run()
                 run.text = str(body)
                 self._style_run(run, self.sizes["body"] - 1, self.theme["muted"])
+                body_y += 1.1
             if bullets:
                 self._add_bullets(
-                    slide, bullets, x + 0.25, y + 2.2, card_w - 0.5, h - 2.3,
+                    slide, bullets, x + pad, body_y, card_w - 2 * pad, y + h - body_y - 0.2,
                     self.sizes["body"] - 2, self.theme["text"],
                 )
         self._notes(slide, slide_spec.get("notes"))
