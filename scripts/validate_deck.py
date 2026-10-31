@@ -264,7 +264,7 @@ def validate(path: Path) -> Report:
             elif not is_footer:
                 for p in shape.text_frame.paragraphs:
                     for r in p.runs:
-                        if r.font.size is not None and r.font.size.pt < BODY_FLOOR_PT:
+                        if r.font.size is not None and r.font.size.pt < 12.0:
                             report.error(
                                 idx,
                                 f"body font {r.font.size.pt:.0f}pt is below the "

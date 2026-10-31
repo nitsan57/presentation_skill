@@ -125,7 +125,9 @@ Top-level keys:
 | `slides` | yes | List of slide objects. |
 
 Each slide: `layout` ∈ `title, section, bullets, two_column, image, table, quote, chart,
-closing, stats, timeline, comparison, cards, before_after, problem_solution_impact`, plus `notes`. Common fields: `title`, `subtitle`, `bullets` (strings), `columns`
+closing, stats, timeline, comparison, cards, before_after, problem_solution_impact,
+flow, process_vertical`, plus `notes`. Aliases: `image_caption`/`captioned_image`/`figure`
+for `image`, `flow`/`process_flow`/`chevrons` for `flow`. Common fields: `title`, `subtitle`, `bullets` (strings), `columns`
 (two lists for `two_column`), `table` (`headers` + `rows`), `image` (`path`), `quote`
 (`text` + `attribution`), `chart` (`type` ∈ `bar, line, pie, doughnut`, `categories`, `series`
 `[{name, values}]`), `stats` (`stats: [{value,label,delta}]`),
@@ -135,9 +137,12 @@ closing, stats, timeline, comparison, cards, before_after, problem_solution_impa
 `problem_solution_impact` (`problem`/`solution`/`impact`, each with `title`,`body`,`bullets`).
 Chart fields: `x_title`, `y_title`, `unit`, `legend`, `show_values`, `colors`, `engine`
 (`pptx` default or `matplotlib`). Table fields: `bold_first_column`, `zebra`, `font_size`.
-Top-level brand fields: `logo` (`path`,`position`,`size`), `confidential`, `footer`
+Top-level brand fields: `logo` (`path`,`position`,`size`,`margin`,`opacity`), `confidential`, `footer`
 (`enabled`,`page_numbers`,`title`,`confidential`,`mark`), `fonts`
 (`title`,`body`,`title_fallbacks`,`body_fallbacks`), `font_files`.
+Layout controls: `accent_bar`, `accent_bar_color`, `accent_bar_height`, `accent_bar_width`,
+`band_color`, `band_height`, `band_text_color`, `title_band_height`, `section_band_color`,
+`closing_band_color`, per-slide `logo` override, image `caption_position`/`fit`.
 
 ## Assertive outline examples
 

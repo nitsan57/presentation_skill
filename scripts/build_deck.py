@@ -99,6 +99,10 @@ LAYOUTS = {
     "before_after",
     "problem_solution_impact",
     "kpi_row",
+    "flow",
+    "process_flow",
+    "process_vertical",
+    "image_caption",
 }
 
 LAYOUT_ALIASES = {
@@ -113,6 +117,16 @@ LAYOUT_ALIASES = {
     "before/after": "before_after",
     "before-after": "before_after",
     "comparison_table": "table",
+    "image_caption": "image",
+    "captioned_image": "image",
+    "figure": "image",
+    "flow": "flow",
+    "process_flow": "flow",
+    "chevrons": "flow",
+    "arrow_flow": "flow",
+    "process_vertical": "process_vertical",
+    "vertical_process": "process_vertical",
+    "vertical_timeline": "process_vertical",
 }
 
 
@@ -195,7 +209,18 @@ class DeckBuilder:
         self.deck_subtitle = spec.get("subtitle")
         self._slide_no = 0
         self.accent_bar = bool(spec.get("accent_bar", True))
+        self.accent_bar_color = spec.get("accent_bar_color", self.theme["accent"])
+        self.accent_bar_height = float(spec.get("accent_bar_height", 0.03))
+        self.accent_bar_width = spec.get("accent_bar_width", None)
         self.card_padding = 0.25
+        self.band_color = spec.get("band_color", self.theme["band"])
+        self.band_text_color = spec.get("band_text_color", self.theme["band_text"])
+        self.band_height = spec.get("band_height", None)
+        self.title_band_color = spec.get("title_band_color", self.band_color)
+        self.title_band_height = float(spec.get("title_band_height", 2.4))
+        self.closing_band_color = spec.get("closing_band_color", self.band_color)
+        self.section_band_color = spec.get("section_band_color", self.theme["accent"])
+        self.section_band_height = float(spec.get("section_band_height", 0.1))
 
         # footer options
         footer = spec.get("footer", True)
@@ -274,7 +299,6 @@ class DeckBuilder:
         slide = self.prs.slides.add_slide(self._blank)
         self._fill_background(slide)
         self._slide_no += 1
-        self._add_logo(slide)
         return slide
 
     def _fill_background(self, slide) -> None:
@@ -334,9 +358,18 @@ class DeckBuilder:
         self._style_run(
             run, size, color, bold=True, font=self.theme["title_font"]
         )
-        if getattr(self, "accent_bar", True):
+        current = getattr(self, "_current_slide_spec", {}) or {}
+        accent_bar = current.get("accent_bar", getattr(self, "accent_bar", True))
+        if accent_bar:
             try:
-                self._rect(slide, x, y + h - 0.26, min(w, 1.6), 0.03, self.theme["accent"])
+                bar_color = current.get("accent_bar_color", getattr(self, "accent_bar_color", self.theme["accent"]))
+                bar_h = float(current.get("accent_bar_height", getattr(self, "accent_bar_height", 0.03)))
+                bar_w = current.get("accent_bar_width", getattr(self, "accent_bar_width", None))
+                if bar_w is None:
+                    bar_w = min(w, 1.6)
+                else:
+                    bar_w = float(bar_w)
+                self._rect(slide, x, y + h - 0.26, bar_w, bar_h, bar_color)
             except Exception:
                 pass
         return box
@@ -381,15 +414,22 @@ class DeckBuilder:
         run.text = icon
         self._style_run(run, min(30, max(18, int(h * 18))), color, bold=True)
 
-    def _add_logo(self, slide) -> None:
-        if not self.logo:
+    def _add_logo(self, slide, override=None) -> None:
+        logo = override if override is not None else self.logo
+        if not logo:
             return
-        path = self.logo.get("path")
+        if isinstance(logo, str):
+            logo = {"path": logo}
+        if not isinstance(logo, dict):
+            return
+        path = logo.get("path")
         if not path or not Path(path).is_file():
             return
-        pos = self.logo.get("position", "top-right")
-        size = float(self.logo.get("size", 0.7))
-        margin = float(self.logo.get("margin", 0.35))
+        if logo.get("enabled", True) is False:
+            return
+        pos = logo.get("position", "top-right")
+        size = float(logo.get("size", 0.7))
+        margin = float(logo.get("margin", 0.35))
         if pos == "top-left":
             x, y = self.margin, 0.2
         elif pos == "top-right":
@@ -401,7 +441,19 @@ class DeckBuilder:
         else:
             x, y = self.width_in - margin - size, 0.2
         try:
-            slide.shapes.add_picture(str(path), Inches(x), Inches(y), height=Inches(size))
+            pic = slide.shapes.add_picture(str(path), Inches(x), Inches(y), height=Inches(size))
+            opacity = logo.get("opacity", logo.get("alpha"))
+            if opacity is not None:
+                try:
+                    from pptx.oxml.ns import qn
+                    blip = pic._element.find('.//{http://schemas.openxmlformats.org/drawingml/2006/main}blip')
+                    if blip is not None:
+                        from lxml import etree
+                        ns = '{http://schemas.openxmlformats.org/drawingml/2006/main}'
+                        alpha = etree.SubElement(blip, ns + 'alphaModFix')
+                        alpha.set('amt', str(int(float(opacity) * 100000)))
+                except Exception:
+                    pass
         except Exception:
             pass
 
@@ -472,8 +524,9 @@ class DeckBuilder:
 
     def add_title(self, slide_spec):
         slide = self._new_slide()
-        band_h = 2.4
-        self._rect(slide, 0, 0, self.width_in, band_h, self.theme["band"])
+        band_h = float(slide_spec.get("band_height", slide_spec.get("title_band_height", self.title_band_height)))
+        band_color = slide_spec.get("band_color", slide_spec.get("title_band_color", self.title_band_color))
+        self._rect(slide, 0, 0, self.width_in, band_h, band_color)
         _, tf = self._textbox(slide, self.margin, 0.9, self.content_w, 1.2)
         tf.vertical_anchor = MSO_ANCHOR.MIDDLE
         run = tf.paragraphs[0].add_run()
@@ -492,7 +545,9 @@ class DeckBuilder:
 
     def add_section(self, slide_spec):
         slide = self._new_slide()
-        self._rect(slide, 0, self.height_in / 2 - 0.05, self.width_in, 0.1, self.theme["accent"])
+        band_color = slide_spec.get("band_color", slide_spec.get("section_band_color", self.section_band_color))
+        band_h = float(slide_spec.get("band_height", slide_spec.get("section_band_height", self.section_band_height)))
+        self._rect(slide, 0, self.height_in / 2 - band_h / 2, self.width_in, band_h, band_color)
         _, tf = self._textbox(slide, self.margin, self.height_in / 2 - 1.5, self.content_w, 1.4)
         tf.vertical_anchor = MSO_ANCHOR.BOTTOM
         run = tf.paragraphs[0].add_run()
@@ -551,20 +606,28 @@ class DeckBuilder:
         path = Path(img)
         if not path.is_file():
             raise FileNotFoundError(f"image not found: {img}")
+        fit = slide_spec.get("fit", "contain")
+        caption_pos = slide_spec.get("caption_position", "bottom")
+        top = 1.6
+        max_h = self.height_in - 2.3
+        if caption_pos == "top":
+            top = 2.1
+            max_h = self.height_in - 2.8
         pic = slide.shapes.add_picture(
-            str(path), Inches(self.margin), Inches(1.6), width=Inches(self.content_w)
+            str(path), Inches(self.margin), Inches(top), width=Inches(self.content_w)
         )
-        if pic.height > Inches(self.height_in - 2.3):
-            ratio = (self.height_in - 2.3) / (pic.height / 914400)
+        if fit == "contain" and pic.height > Inches(max_h):
+            ratio = max_h / (pic.height / 914400)
             pic.width = Emu(int(pic.width * ratio))
             pic.height = Emu(int(pic.height * ratio))
             pic.left = Emu(int((self.prs.slide_width - pic.width) / 2))
-            pic.top = Inches(1.6)
+            pic.top = Inches(top)
         caption = slide_spec.get("caption")
         if caption:
-            _, tf = self._textbox(
-                slide, self.margin, self.height_in - 0.7, self.content_w, 0.4
-            )
+            cy = self.height_in - 0.7
+            if caption_pos == "top":
+                cy = 1.6
+            _, tf = self._textbox(slide, self.margin, cy, self.content_w, 0.4)
             run = tf.paragraphs[0].add_run()
             run.text = caption
             self._style_run(run, self.sizes["caption"], self.theme["muted"])
@@ -859,7 +922,8 @@ class DeckBuilder:
     def add_closing(self, slide_spec):
         slide = self._new_slide()
         band_h = self.height_in
-        self._rect(slide, 0, 0, self.width_in, band_h, self.theme["band"])
+        band_color = slide_spec.get("band_color", slide_spec.get("closing_band_color", self.closing_band_color))
+        self._rect(slide, 0, 0, self.width_in, band_h, band_color)
         _, tf = self._textbox(
             slide, self.margin, self.height_in / 2 - 1.5, self.content_w, 1.4
         )
@@ -999,6 +1063,120 @@ class DeckBuilder:
             run = tf.paragraphs[0].add_run()
             run.text = str(it.get("body", it.get("description", "")))
             self._style_run(run, self.sizes["caption"] + 2, self.theme["muted"])
+        self._notes(slide, slide_spec.get("notes"))
+
+    def add_flow(self, slide_spec):
+        slide = self._new_slide()
+        self._heading(slide, slide_spec.get("title", ""), self.sizes["title"], self.theme["text"])
+        raw = slide_spec.get("steps", slide_spec.get("items", slide_spec.get("stages", [])))
+        items = []
+        for it in (raw if isinstance(raw, (list, tuple)) else [raw] if raw is not None else []):
+            if it is None:
+                items.append({"title": "", "body": ""})
+                continue
+            if isinstance(it, str):
+                items.append({"title": it, "body": ""})
+                continue
+            if isinstance(it, (list, tuple)):
+                items.append({"title": it[0] if len(it) > 0 else "", "body": it[1] if len(it) > 1 else ""})
+                continue
+            if isinstance(it, dict):
+                items.append({
+                    "title": it.get("title", it.get("name", it.get("heading", ""))),
+                    "body": it.get("body", it.get("description", it.get("text", ""))),
+                })
+                continue
+            items.append({"title": str(it), "body": ""})
+        if not items:
+            self._notes(slide, slide_spec.get("notes"))
+            return
+        n = len(items)
+        if n > 5:
+            raise ValueError("flow layout supports at most 5 steps")
+        gap = 0.15
+        arrow_w = 0.35
+        card_w = (self.content_w - gap * (n - 1) - arrow_w * (n - 1)) / n
+        if card_w <= 0:
+            raise ValueError("flow layout: too many steps for slide width")
+        y = 2.0
+        h = self.height_in - 3.0
+        pad = self.card_padding
+        for i, it in enumerate(items):
+            x = self.margin + i * (card_w + gap + arrow_w)
+            self._card(slide, x, y, card_w, h, self.theme["surface"])
+            _, tf = self._textbox(slide, x + pad, y + 0.2, card_w - 2 * pad, 0.6)
+            tf.paragraphs[0].alignment = PP_ALIGN.CENTER
+            run = tf.paragraphs[0].add_run()
+            run.text = str(it.get("title", ""))
+            self._style_run(run, self.sizes["body"], self.theme["text"], bold=True)
+            _, tf = self._textbox(slide, x + pad, y + 0.9, card_w - 2 * pad, h - 1.0)
+            tf.paragraphs[0].alignment = PP_ALIGN.CENTER
+            run = tf.paragraphs[0].add_run()
+            run.text = str(it.get("body", ""))
+            self._style_run(run, self.sizes["body"] - 2, self.theme["muted"])
+            if i < n - 1:
+                ax = x + card_w + gap
+                ay = y + h / 2 - 0.18
+                self._rect(slide, ax, ay, arrow_w, 0.36, self.theme["accent"], shape=MSO_SHAPE.RIGHT_ARROW)
+        self._notes(slide, slide_spec.get("notes"))
+
+    def add_process_vertical(self, slide_spec):
+        slide = self._new_slide()
+        self._heading(slide, slide_spec.get("title", ""), self.sizes["title"], self.theme["text"])
+        raw = slide_spec.get("steps", slide_spec.get("items", slide_spec.get("stages", [])))
+        items = []
+        for it in (raw if isinstance(raw, (list, tuple)) else [raw] if raw is not None else []):
+            if it is None:
+                items.append({"title": "", "body": ""})
+                continue
+            if isinstance(it, str):
+                items.append({"title": it, "body": ""})
+                continue
+            if isinstance(it, (list, tuple)):
+                items.append({"title": it[0] if len(it) > 0 else "", "body": it[1] if len(it) > 1 else ""})
+                continue
+            if isinstance(it, dict):
+                items.append({
+                    "title": it.get("title", it.get("name", it.get("heading", ""))),
+                    "body": it.get("body", it.get("description", it.get("text", ""))),
+                })
+                continue
+            items.append({"title": str(it), "body": ""})
+        if not items:
+            self._notes(slide, slide_spec.get("notes"))
+            return
+        n = len(items)
+        if n > 6:
+            raise ValueError("process_vertical layout supports at most 6 steps")
+        gap = 0.18
+        card_h = (self.height_in - 2.2 - gap * (n - 1)) / n
+        if card_h <= 0:
+            raise ValueError("process_vertical layout: too many steps")
+        y = 1.6
+        pad = self.card_padding
+        for i, it in enumerate(items):
+            yy = y + i * (card_h + gap)
+            self._rect(slide, self.margin, yy, 0.45, card_h, self.theme["accent"], shape=MSO_SHAPE.OVAL)
+            _, tf = self._textbox(slide, self.margin, yy, 0.45, card_h)
+            tf.vertical_anchor = MSO_ANCHOR.MIDDLE
+            tf.paragraphs[0].alignment = PP_ALIGN.CENTER
+            run = tf.paragraphs[0].add_run()
+            run.text = str(i + 1)
+            num_color = self.theme["bg"] if _hex_luminance(self.theme["accent"]) > 0.2 else self.theme["band_text"]
+            self._style_run(run, self.sizes["body"], num_color, bold=True, font=self.theme["title_font"])
+            cx = self.margin + 0.6
+            cw = self.content_w - 0.6
+            self._card(slide, cx, yy, cw, card_h, self.theme["surface"])
+            _, tf = self._textbox(slide, cx + pad, yy + 0.15, cw - 2 * pad, 0.5)
+            run = tf.paragraphs[0].add_run()
+            run.text = str(it.get("title", ""))
+            self._style_run(run, self.sizes["body"], self.theme["text"], bold=True)
+            _, tf = self._textbox(slide, cx + pad, yy + 0.65, cw - 2 * pad, card_h - 0.75)
+            run = tf.paragraphs[0].add_run()
+            run.text = str(it.get("body", ""))
+            self._style_run(run, self.sizes["body"] - 2, self.theme["muted"])
+            if i < n - 1:
+                self._rect(slide, self.margin + 0.18, yy + card_h, 0.09, gap, self.theme["muted"])
         self._notes(slide, slide_spec.get("notes"))
 
     def add_comparison(self, slide_spec):
@@ -1262,6 +1440,8 @@ class DeckBuilder:
             "cards": self.add_cards,
             "before_after": self.add_before_after,
             "problem_solution_impact": self.add_problem_solution_impact,
+            "flow": self.add_flow,
+            "process_vertical": self.add_process_vertical,
         }
         slides = spec.get("slides", [])
         if not slides:
@@ -1273,8 +1453,17 @@ class DeckBuilder:
                 raise ValueError(
                     f"unknown layout {layout!r}; choose from {sorted(LAYOUTS)}"
                 )
+            self._current_slide_spec = slide_spec
             handlers[layout](slide_spec)
-            self._add_footer(self.prs.slides[-1])
+            slide = self.prs.slides[-1]
+            # logo: per-slide override or deck default
+            if "logo" in slide_spec:
+                logo_spec = slide_spec.get("logo")
+            else:
+                logo_spec = self.logo
+            if logo_spec:
+                self._add_logo(slide, logo_spec)
+            self._add_footer(slide)
 
 
 def main(argv=None) -> int:
